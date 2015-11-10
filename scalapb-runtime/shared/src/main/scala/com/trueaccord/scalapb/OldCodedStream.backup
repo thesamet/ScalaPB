@@ -1,0 +1,649 @@
+class OldCodedInputStream private (private val buffer: Array[Byte], private var bufferPos: Int, len: Int)
+    {
+
+  def readTag(): Int = {
+    if (isAtEnd) {
+      lastTag = 0
+      return 0
+    }
+    lastTag = readRawVarint32()
+    if (WireFormat.getTagFieldNumber(lastTag) == 0) {
+      throw InvalidProtocolBufferException.invalidTag()
+    }
+    lastTag
+  }
+
+  def checkLastTagWas(value: Int) {
+    if (lastTag != value) {
+      throw InvalidProtocolBufferException.invalidEndTag()
+    }
+  }
+
+  def skipField(tag: Int): Boolean = WireFormat.getTagWireType(tag) match {
+    case WireFormat.WIRETYPE_VARINT =>
+      skipRawVarint()
+      true
+
+    case WireFormat.WIRETYPE_FIXED64 =>
+      skipRawBytes(8)
+      true
+
+    case WireFormat.WIRETYPE_LENGTH_DELIMITED =>
+      skipRawBytes(readRawVarint32())
+      true
+
+    case WireFormat.WIRETYPE_START_GROUP =>
+      skipMessage()
+      checkLastTagWas(WireFormat.makeTag(WireFormat.getTagFieldNumber(tag), WireFormat.WIRETYPE_END_GROUP))
+      true
+
+    case WireFormat.WIRETYPE_END_GROUP => false
+    case WireFormat.WIRETYPE_FIXED32 =>
+      skipRawBytes(4)
+      true
+
+    case _ => throw InvalidProtocolBufferException.invalidWireType()
+  }
+
+  def skipField(tag: Int, output: CodedOutputStream): Boolean = WireFormat.getTagWireType(tag) match {
+    case WireFormat.WIRETYPE_VARINT => {
+      val value = readInt64()
+      output.writeRawVarint32(tag)
+      output.writeUInt64NoTag(value)
+      true
+    }
+    case WireFormat.WIRETYPE_FIXED64 => {
+      val value = readRawLittleEndian64()
+      output.writeRawVarint32(tag)
+      output.writeFixed64NoTag(value)
+      true
+    }
+    case WireFormat.WIRETYPE_LENGTH_DELIMITED => {
+      ???
+      /*
+      val value = readBytes()
+      output.writeRawVarint32(tag)
+      output.writeBytesNoTag(value)
+      true
+      */
+    }
+    case WireFormat.WIRETYPE_START_GROUP => {
+      output.writeRawVarint32(tag)
+      skipMessage(output)
+      val endtag = WireFormat.makeTag(WireFormat.getTagFieldNumber(tag), WireFormat.WIRETYPE_END_GROUP)
+      checkLastTagWas(endtag)
+      output.writeRawVarint32(endtag)
+      true
+    }
+    case WireFormat.WIRETYPE_END_GROUP => {
+      false
+    }
+    case WireFormat.WIRETYPE_FIXED32 => {
+      val value = readRawLittleEndian32()
+      output.writeRawVarint32(tag)
+      output.writeFixed32NoTag(value)
+      true
+    }
+    case _ => throw InvalidProtocolBufferException.invalidWireType()
+  }
+
+  def skipMessage() {
+    while (true) {
+      val tag = readTag()
+      if (tag == 0 || !skipField(tag)) {
+        return
+      }
+    }
+  }
+
+  def skipMessage(output: CodedOutputStream) {
+    while (true) {
+      val tag = readTag()
+      if (tag == 0 || !skipField(tag, output)) {
+        return
+      }
+    }
+  }
+
+  private class SkippedDataSink extends RefillCallback {
+
+    private var lastPos: Int = bufferPos
+
+    private var byteArrayStream: ByteArrayOutputStream = _
+
+    override def onRefill() {
+      if (byteArrayStream == null) {
+        byteArrayStream = new ByteArrayOutputStream()
+      }
+      byteArrayStream.write(buffer, lastPos, bufferPos - lastPos)
+      lastPos = 0
+    }
+
+    def getSkippedData(): ByteBuffer = {
+      if (byteArrayStream == null) {
+        ByteBuffer.wrap(buffer, lastPos, bufferPos - lastPos)
+      } else {
+        byteArrayStream.write(buffer, lastPos, bufferPos)
+        ByteBuffer.wrap(byteArrayStream.toByteArray())
+      }
+    }
+  }
+
+  def readDouble(): Double = {
+    java.lang.Double.longBitsToDouble(readRawLittleEndian64())
+  }
+
+  def readFloat(): Float = {
+    java.lang.Float.intBitsToFloat(readRawLittleEndian32())
+  }
+
+  def readUInt64(): Long = readRawVarint64()
+
+  def readInt64(): Long = readRawVarint64()
+
+  def readInt32(): Int = readRawVarint32()
+
+  def readFixed64(): Long = readRawLittleEndian64()
+
+  def readFixed32(): Int = readRawLittleEndian32()
+
+  def readBool(): Boolean = readRawVarint64() != 0
+
+  def readString(): String = {
+    val size = readRawVarint32()
+    if (size <= (bufferSize - bufferPos) && size > 0) {
+      val result = new String(buffer, bufferPos, size, Internal.UTF_8)
+      bufferPos += size
+      result
+    } else if (size == 0) {
+      ""
+    } else {
+      new String(readRawBytesSlowPath(size), Internal.UTF_8)
+    }
+  }
+
+/*
+  def readStringRequireUtf8(): String = {
+    val size = readRawVarint32()
+    var bytes: Array[Byte] = null
+    var pos = bufferPos
+    if (size <= (bufferSize - pos) && size > 0) {
+      bytes = buffer
+      bufferPos = pos + size
+    } else if (size == 0) {
+      return ""
+    } else {
+      bytes = readRawBytesSlowPath(size)
+      pos = 0
+    }
+    if (!Utf8.isValidUtf8(bytes, pos, pos + size)) {
+      throw InvalidProtocolBufferException.invalidUtf8()
+    }
+    new String(bytes, pos, size, Internal.UTF_8)
+  }
+  */
+
+  /*
+  def readBytes(): ByteString = {
+    val size = readRawVarint32()
+    if (size <= (bufferSize - bufferPos) && size > 0) {
+      val result = if (bufferIsImmutable && enableAliasing) new BoundedByteString(buffer, bufferPos,
+        size) else ByteString.copyFrom(buffer, bufferPos, size)
+      bufferPos += size
+      result
+    } else if (size == 0) {
+      ByteString.EMPTY
+    } else {
+      new LiteralByteString(readRawBytesSlowPath(size))
+    }
+  }
+  */
+
+  def readByteArray(): Array[Byte] = {
+    val size = readRawVarint32()
+    if (size <= (bufferSize - bufferPos) && size > 0) {
+      val result = Arrays.copyOfRange(buffer, bufferPos, bufferPos + size)
+      bufferPos += size
+      result
+    } else {
+      readRawBytesSlowPath(size)
+    }
+  }
+
+/*
+  def readByteBuffer(): ByteBuffer = {
+    val size = readRawVarint32()
+    if (size <= (bufferSize - bufferPos) && size > 0) {
+      val result = if (input == null && !bufferIsImmutable && enableAliasing) ByteBuffer.wrap(buffer,
+        bufferPos, size).slice() else ByteBuffer.wrap(Arrays.copyOfRange(buffer, bufferPos, bufferPos + size))
+      bufferPos += size
+      result
+    } else if (size == 0) {
+      Internal.EMPTY_BYTE_BUFFER
+    } else {
+      ByteBuffer.wrap(readRawBytesSlowPath(size))
+    }
+  }
+  */
+
+  def readUInt32(): Int = readRawVarint32()
+
+  def readEnum(): Int = readRawVarint32()
+
+  def readSFixed32(): Int = readRawLittleEndian32()
+
+  def readSFixed64(): Long = readRawLittleEndian64()
+
+  def readSInt32(): Int = decodeZigZag32(readRawVarint32())
+
+  def readSInt64(): Long = decodeZigZag64(readRawVarint64())
+
+  def readRawVarint32(): Int = {
+    /*
+    fastpath: {
+      var pos = bufferPos
+      if (bufferSize == pos) {
+        //break
+      }
+      val buffer = this.buffer
+      var x: Int = 0
+      if ((x = buffer(pos += 1)) >= 0) {
+        bufferPos = pos
+        return x
+      } else if (bufferSize - pos < 9) {
+        //break
+      } else if ((x ^= (buffer(pos += 1) << 7)) < 0) {
+        x ^= (~0 << 7)
+      } else if ((x ^= (buffer(pos += 1) << 14)) >= 0) {
+        x ^= (~0 << 7) ^ (~0 << 14)
+      } else if ((x ^= (buffer(pos += 1) << 21)) < 0) {
+        x ^= (~0 << 7) ^ (~0 << 14) ^ (~0 << 21)
+      } else {
+        val y = buffer(pos += 1)
+        x ^= y << 28
+        x ^= (~0 << 7) ^ (~0 << 14) ^ (~0 << 21) ^ (~0 << 28)
+        if (y < 0 && buffer(pos += 1) < 0 && buffer(pos += 1) < 0 &&
+          buffer(pos += 1) < 0 &&
+          buffer(pos += 1) < 0 &&
+          buffer(pos += 1) < 0) {
+          //break
+        }
+      }
+      bufferPos = pos
+      return x
+    }
+    */
+    readRawVarint64SlowPath().toInt
+  }
+
+  private def skipRawVarint() {
+    if (bufferSize - bufferPos >= 10) {
+      val buffer = this.buffer
+      var pos = bufferPos
+      for (i <- 0 until 10 if buffer(pos) >= 0) {
+        pos += 1
+        bufferPos = pos
+        return
+      }
+    }
+    skipRawVarintSlowPath()
+  }
+
+  private def skipRawVarintSlowPath() {
+    for (i <- 0 until 10 if readRawByte() >= 0) {
+      return
+    }
+    throw InvalidProtocolBufferException.malformedVarint()
+  }
+
+  def readRawVarint64(): Long = {
+    /*
+    fastpath: {
+      var pos = bufferPos
+      if (bufferSize == pos) {
+        //break
+      }
+      val buffer = this.buffer
+      var x: Long = 0l
+      var y: Int = 0
+      if ((y = buffer(pos += 1)) >= 0) {
+        bufferPos = pos
+        return y
+      } else if (bufferSize - pos < 9) {
+        //break
+      } else if ((y ^= (buffer(pos += 1) << 7)) < 0) {
+        x = y ^ (~0 << 7)
+      } else if ((y ^= (buffer(pos += 1) << 14)) >= 0) {
+        x = y ^ ((~0 << 7) ^ (~0 << 14))
+      } else if ((y ^= (buffer(pos += 1) << 21)) < 0) {
+        x = y ^ ((~0 << 7) ^ (~0 << 14) ^ (~0 << 21))
+      } else if ((x = y.toLong ^ (buffer(pos += 1).toLong << 28)) >= 0L) {
+        x ^= (~0L << 7) ^ (~0L << 14) ^ (~0L << 21) ^ (~0L << 28)
+      } else if ((x ^= (buffer(pos += 1).toLong << 35)) < 0L) {
+        x ^= (~0L << 7) ^ (~0L << 14) ^ (~0L << 21) ^ (~0L << 28) ^
+          (~0L << 35)
+      } else if ((x ^= (buffer(pos += 1).toLong << 42)) >= 0L) {
+        x ^= (~0L << 7) ^ (~0L << 14) ^ (~0L << 21) ^ (~0L << 28) ^
+          (~0L << 35) ^
+          (~0L << 42)
+      } else if ((x ^= (buffer(pos += 1).toLong << 49)) < 0L) {
+        x ^= (~0L << 7) ^ (~0L << 14) ^ (~0L << 21) ^ (~0L << 28) ^
+          (~0L << 35) ^
+          (~0L << 42) ^
+          (~0L << 49)
+      } else {
+        x ^= (buffer(pos += 1).toLong << 56)
+        x ^= (~0L << 7) ^ (~0L << 14) ^ (~0L << 21) ^ (~0L << 28) ^
+          (~0L << 35) ^
+          (~0L << 42) ^
+          (~0L << 49) ^
+          (~0L << 56)
+        if (x < 0L) {
+          if (buffer(pos += 1) < 0L) {
+            //break
+          }
+        }
+      }
+      bufferPos = pos
+      return x
+    }
+    */
+    readRawVarint64SlowPath()
+  }
+
+  def readRawVarint64SlowPath(): Long = {
+    var result = 0L
+    var shift = 0L
+    while (shift < 64) {
+      val b = readRawByte()
+      result |= (b & 0x7F).toLong << shift
+      if ((b & 0x80) == 0) {
+        return result
+      }
+      shift += 7
+    }
+    throw InvalidProtocolBufferException.malformedVarint()
+  }
+
+  def readRawLittleEndian32(): Int = {
+    var pos = bufferPos
+    if (bufferSize - pos < 4) {
+      refillBuffer(4)
+      pos = bufferPos
+    }
+    val buffer = this.buffer
+    bufferPos = pos + 4
+    (((buffer(pos) & 0xff)) | ((buffer(pos + 1) & 0xff) << 8) |
+      ((buffer(pos + 2) & 0xff) << 16) |
+      ((buffer(pos + 3) & 0xff) << 24))
+  }
+
+  def readRawLittleEndian64(): Long = {
+    var pos = bufferPos
+    if (bufferSize - pos < 8) {
+      refillBuffer(8)
+      pos = bufferPos
+    }
+    val buffer = this.buffer
+    bufferPos = pos + 8
+    (((buffer(pos).toLong & 0xffL)) | ((buffer(pos + 1).toLong & 0xffL) << 8) |
+      ((buffer(pos + 2).toLong & 0xffL) << 16) |
+      ((buffer(pos + 3).toLong & 0xffL) << 24) |
+      ((buffer(pos + 4).toLong & 0xffL) << 32) |
+      ((buffer(pos + 5).toLong & 0xffL) << 40) |
+      ((buffer(pos + 6).toLong & 0xffL) << 48) |
+      ((buffer(pos + 7).toLong & 0xffL) << 56))
+  }
+
+  private val bufferIsImmutable = false
+
+  private var bufferSize: Int = off + len
+
+  private var bufferSizeAfterLimit: Int = _
+
+  private val input = null
+
+  private var lastTag: Int = _
+
+  private var enableAliasing: Boolean = false
+
+  private var totalBytesRetired: Int = -off
+
+  private var currentLimit: Int = java.lang.Integer.MAX_VALUE
+
+  private var recursionDepth: Int = _
+
+  private var recursionLimit: Int = DEFAULT_RECURSION_LIMIT
+
+  private var sizeLimit: Int = DEFAULT_SIZE_LIMIT
+
+  private def this(input: InputStream) {
+    this()
+    buffer = Array.ofDim[Byte](BUFFER_SIZE)
+    bufferSize = 0
+    bufferPos = 0
+    totalBytesRetired = 0
+    this.input = input
+    bufferIsImmutable = false
+  }
+
+  def enableAliasing(enabled: Boolean) {
+    this.enableAliasing = enabled
+  }
+
+  def setRecursionLimit(limit: Int): Int = {
+    if (limit < 0) {
+      throw new IllegalArgumentException("Recursion limit cannot be negative: " + limit)
+    }
+    val oldLimit = recursionLimit
+    recursionLimit = limit
+    oldLimit
+  }
+
+  def setSizeLimit(limit: Int): Int = {
+    if (limit < 0) {
+      throw new IllegalArgumentException("Size limit cannot be negative: " + limit)
+    }
+    val oldLimit = sizeLimit
+    sizeLimit = limit
+    oldLimit
+  }
+
+  def resetSizeCounter() {
+    totalBytesRetired = -bufferPos
+  }
+
+  def pushLimit(byteLimit: Int): Int = {
+    if (byteLimit < 0) {
+      throw InvalidProtocolBufferException.negativeSize()
+    }
+    byteLimit += totalBytesRetired + bufferPos
+    val oldLimit = currentLimit
+    if (byteLimit > oldLimit) {
+      throw InvalidProtocolBufferException.truncatedMessage()
+    }
+    currentLimit = byteLimit
+    recomputeBufferSizeAfterLimit()
+    oldLimit
+  }
+
+  private def recomputeBufferSizeAfterLimit() {
+    bufferSize += bufferSizeAfterLimit
+    val bufferEnd = totalBytesRetired + bufferSize
+    if (bufferEnd > currentLimit) {
+      bufferSizeAfterLimit = bufferEnd - currentLimit
+      bufferSize -= bufferSizeAfterLimit
+    } else {
+      bufferSizeAfterLimit = 0
+    }
+  }
+
+  def popLimit(oldLimit: Int) {
+    currentLimit = oldLimit
+    recomputeBufferSizeAfterLimit()
+  }
+
+  def getBytesUntilLimit(): Int = {
+    if (currentLimit == java.lang.Integer.MAX_VALUE) {
+      return -1
+    }
+    val currentAbsolutePosition = totalBytesRetired + bufferPos
+    currentLimit - currentAbsolutePosition
+  }
+
+  def isAtEnd(): Boolean = {
+    bufferPos == bufferSize && !tryRefillBuffer(1)
+  }
+
+  def getTotalBytesRead(): Int = totalBytesRetired + bufferPos
+
+  private var refillCallback: RefillCallback = null
+
+  private def ensureAvailable(n: Int) {
+    if (bufferSize - bufferPos < n) {
+      refillBuffer(n)
+    }
+  }
+
+  private def refillBuffer(n: Int) {
+    if (!tryRefillBuffer(n)) {
+      throw InvalidProtocolBufferException.truncatedMessage()
+    }
+  }
+
+  private def tryRefillBuffer(n: Int): Boolean = {
+    if (bufferPos + n <= bufferSize) {
+      throw new IllegalStateException("refillBuffer() called when " + n + " bytes were already available in buffer")
+    }
+    if (totalBytesRetired + bufferPos + n > currentLimit) {
+      return false
+    }
+    if (refillCallback != null) {
+      refillCallback.onRefill()
+    }
+    if (input != null) {
+      val pos = bufferPos
+      if (pos > 0) {
+        if (bufferSize > pos) {
+          System.arraycopy(buffer, pos, buffer, 0, bufferSize - pos)
+        }
+        totalBytesRetired += pos
+        bufferSize -= pos
+        bufferPos = 0
+      }
+      val bytesRead = input.read(buffer, bufferSize, buffer.length - bufferSize)
+      if (bytesRead == 0 || bytesRead < -1 || bytesRead > buffer.length) {
+        throw new IllegalStateException("InputStream#read(byte[]) returned invalid result: " +
+          bytesRead +
+          "\nThe InputStream implementation is buggy.")
+      }
+      if (bytesRead > 0) {
+        bufferSize += bytesRead
+        if (totalBytesRetired + n - sizeLimit > 0) {
+          throw InvalidProtocolBufferException.sizeLimitExceeded()
+        }
+        recomputeBufferSizeAfterLimit()
+        return if ((bufferSize >= n)) true else tryRefillBuffer(n)
+      }
+    }
+    false
+  }
+
+  def readRawByte(): Byte = {
+    if (bufferPos == bufferSize) {
+      refillBuffer(1)
+    }
+    buffer(bufferPos += 1)
+  }
+
+  def readRawBytes(size: Int): Array[Byte] = {
+    val pos = bufferPos
+    if (size <= (bufferSize - pos) && size > 0) {
+      bufferPos = pos + size
+      Arrays.copyOfRange(buffer, pos, pos + size)
+    } else {
+      readRawBytesSlowPath(size)
+    }
+  }
+
+  private def readRawBytesSlowPath(size: Int): Array[Byte] = {
+    if (size <= 0) {
+      if (size == 0) {
+        return Internal.EMPTY_BYTE_ARRAY
+      } else {
+        throw InvalidProtocolBufferException.negativeSize()
+      }
+    }
+    if (totalBytesRetired + bufferPos + size > currentLimit) {
+      skipRawBytes(currentLimit - totalBytesRetired - bufferPos)
+      throw InvalidProtocolBufferException.truncatedMessage()
+    }
+    if (size < BUFFER_SIZE) {
+      val bytes = Array.ofDim[Byte](size)
+      val pos = bufferSize - bufferPos
+      System.arraycopy(buffer, bufferPos, bytes, 0, pos)
+      bufferPos = bufferSize
+      ensureAvailable(size - pos)
+      System.arraycopy(buffer, 0, bytes, pos, size - pos)
+      bufferPos = size - pos
+      bytes
+    } else {
+      val originalBufferPos = bufferPos
+      val originalBufferSize = bufferSize
+      totalBytesRetired += bufferSize
+      bufferPos = 0
+      bufferSize = 0
+      var sizeLeft = size - (originalBufferSize - originalBufferPos)
+      val chunks = new ArrayList[Array[Byte]]()
+      while (sizeLeft > 0) {
+        val chunk = Array.ofDim[Byte](Math.min(sizeLeft, BUFFER_SIZE))
+        var pos = 0
+        while (pos < chunk.length) {
+          val n = if ((input == null)) -1 else input.read(chunk, pos, chunk.length - pos)
+          if (n == -1) {
+            throw InvalidProtocolBufferException.truncatedMessage()
+          }
+          totalBytesRetired += n
+          pos += n
+        }
+        sizeLeft -= chunk.length
+        chunks.add(chunk)
+      }
+      val bytes = Array.ofDim[Byte](size)
+      var pos = originalBufferSize - originalBufferPos
+      System.arraycopy(buffer, originalBufferPos, bytes, 0, pos)
+      for (chunk <- chunks) {
+        System.arraycopy(chunk, 0, bytes, pos, chunk.length)
+        pos += chunk.length
+      }
+      bytes
+    }
+  }
+
+  def skipRawBytes(size: Int) {
+    if (size <= (bufferSize - bufferPos) && size >= 0) {
+      bufferPos += size
+    } else {
+      skipRawBytesSlowPath(size)
+    }
+  }
+
+  private def skipRawBytesSlowPath(size: Int) {
+    if (size < 0) {
+      throw InvalidProtocolBufferException.negativeSize()
+    }
+    if (totalBytesRetired + bufferPos + size > currentLimit) {
+      skipRawBytes(currentLimit - totalBytesRetired - bufferPos)
+      throw InvalidProtocolBufferException.truncatedMessage()
+    }
+    var pos = bufferSize - bufferPos
+    bufferPos = bufferSize
+    refillBuffer(1)
+    while (size - pos > bufferSize) {
+      pos += bufferSize
+      bufferPos = bufferSize
+      refillBuffer(1)
+    }
+    bufferPos = size - pos
+  }
+}

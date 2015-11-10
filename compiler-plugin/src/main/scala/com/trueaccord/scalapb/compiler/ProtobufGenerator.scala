@@ -1,8 +1,9 @@
 package com.trueaccord.scalapb.compiler
 
 import com.google.protobuf.Descriptors._
-import com.google.protobuf.{CodedOutputStream, ByteString}
+import com.google.protobuf.ByteString
 import com.google.protobuf.compiler.PluginProtos.{CodeGeneratorRequest, CodeGeneratorResponse}
+import com.trueaccord.scalapb.CodedOutputStream
 import scala.collection.JavaConversions._
 
 case class GeneratorParams(javaConversions: Boolean = false, flatPackage: Boolean = false)
@@ -276,12 +277,12 @@ class ProtobufGenerator(val params: GeneratorParams) extends DescriptorPimps {
   def sizeExpressionForSingleField(field: FieldDescriptor, expr: String): String =
     if (field.isMessage) {
       val size = s"$expr.serializedSize"
-      CodedOutputStream.computeTagSize(field.getNumber) + s" + com.google.protobuf.CodedOutputStream.computeRawVarint32Size($size) + $size"
+      CodedOutputStream.computeTagSize(field.getNumber) + s" + com.trueaccord.scalapb.CodedOutputStream.computeRawVarint32Size($size) + $size"
     } else if(field.isEnum)
-      s"com.google.protobuf.CodedOutputStream.computeEnumSize(${field.getNumber}, ${expr}.value)"
+      s"com.trueaccord.scalapb.CodedOutputStream.computeEnumSize(${field.getNumber}, ${expr}.value)"
     else {
       val capTypeName = Types.capitalizedType(field.getType)
-      s"com.google.protobuf.CodedOutputStream.compute${capTypeName}Size(${field.getNumber}, ${expr})"
+      s"com.trueaccord.scalapb.CodedOutputStream.compute${capTypeName}Size(${field.getNumber}, ${expr})"
     }
 
   def fieldAccessorSymbol(field: FieldDescriptor) =
@@ -330,7 +331,7 @@ class ProtobufGenerator(val params: GeneratorParams) extends DescriptorPimps {
         fp
           .addM(
             s"""if($fieldNameSymbol.nonEmpty) {
-               |  __size += $tagSize + com.google.protobuf.CodedOutputStream.computeRawVarint32Size(${fieldName}SerializedSize) + ${fieldName}SerializedSize
+               |  __size += $tagSize + com.trueaccord.scalapb.CodedOutputStream.computeRawVarint32Size(${fieldName}SerializedSize) + ${fieldName}SerializedSize
                |}""")
       }
     } else throw new RuntimeException("Should not reach here.")
@@ -360,7 +361,7 @@ class ProtobufGenerator(val params: GeneratorParams) extends DescriptorPimps {
               fp.add(s"  $size * ${field.scalaName.asSymbol}.size")
             case None =>
               val capTypeName = Types.capitalizedType(field.getType)
-              val sizeFunc = Seq(s"com.google.protobuf.CodedOutputStream.compute${capTypeName}SizeNoTag")
+              val sizeFunc = Seq(s"com.trueaccord.scalapb.CodedOutputStream.compute${capTypeName}SizeNoTag")
               val fromEnum = if (field.isEnum) Seq(s"(_: ${field.baseSingleScalaTypeName}).value") else Nil
               val fromCustom = if (field.customSingleScalaTypeName.isDefined)
                 Seq(s"${field.typeMapper}.toBase")
@@ -376,7 +377,7 @@ class ProtobufGenerator(val params: GeneratorParams) extends DescriptorPimps {
     else s"(${funcs(0)} _)" + funcs.tail.map(func => s".compose($func)").mkString
 
   def generateWriteTo(message: Descriptor)(fp: FunctionalPrinter) =
-    fp.add(s"def writeTo(output: com.google.protobuf.CodedOutputStream): Unit = {")
+    fp.add(s"def writeTo(output: com.trueaccord.scalapb.CodedOutputStream): Unit = {")
       .indent
       .print(message.getFields.sortBy(_.getNumber).zipWithIndex) {
       case ((field, index), printer) =>

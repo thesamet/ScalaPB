@@ -2,7 +2,7 @@ package com.trueaccord.scalapb
 
 import java.io.InputStream
 
-import com.google.protobuf.{CodedOutputStream, CodedInputStream}
+import com.google.protobuf.CodedInputStream
 
 object LiteParser {
   def parseFrom[A <: GeneratedMessage with Message[A]](companion: GeneratedMessageCompanion[A], input: CodedInputStream): A = {

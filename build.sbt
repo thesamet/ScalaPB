@@ -65,25 +65,45 @@ lazy val root =
     .settings(
       publishArtifact := false,
       aggregate in sonatypeRelease := false
-    ).settings(projectReleaseSettings: _*).aggregate(runtime, compilerPlugin, proptest, scalapbc)
+    ).settings(projectReleaseSettings: _*).aggregate(
+      runtimeJS, runtimeJVM, compilerPlugin, proptest, scalapbc)
 
-lazy val runtime = project.in(file("scalapb-runtime")).settings(
-  projectReleaseSettings:_*)
+lazy val runtime = crossProject.in(file("scalapb-runtime")).
+  settings(
+    name := "scalapb-runtime",
+    libraryDependencies ++= Seq(
+      "com.google.protobuf" % "protobuf-java" % "3.0.0-beta-1",
+      "com.trueaccord.lenses" %% "lenses" % "0.4.1",
+      "org.scalacheck" %% "scalacheck" % "1.12.4" % "test",
+      "org.scalatest" %% "scalatest" % (if (scalaVersion.value.startsWith("2.12")) "2.2.5-M1" else "2.2.5") % "test"
+    )
+  ).
+  settings(projectReleaseSettings: _*).
+  jvmSettings(
+    // Add JVM-specific settings here
+    unmanagedResourceDirectories in Compile += baseDirectory.value / "../protobuf"
+  ).
+  jsSettings(
+    // Add JS-specific settings here
+  )
+
+lazy val runtimeJVM = runtime.jvm
+lazy val runtimeJS = runtime.js
 
 lazy val compilerPlugin = project.in(file("compiler-plugin"))
-  .dependsOn(runtime)
+  .dependsOn(runtimeJVM)
   .settings(
     projectReleaseSettings:_*)
 
 lazy val scalapbc = project.in(file("scalapbc"))
-  .dependsOn(compilerPlugin, runtime)
+  .dependsOn(compilerPlugin, runtimeJVM)
   .settings(
     publishArtifact := false,
     publishTo := Some(Resolver.file("Unused transient repository", file("target/unusedrepo")))
   )
 
 lazy val proptest = project.in(file("proptest"))
-  .dependsOn(runtime, compilerPlugin)
+  .dependsOn(runtimeJVM, compilerPlugin)
     .configs( ShortTest )
     .settings( inConfig(ShortTest)(Defaults.testTasks): _*)
     .settings(

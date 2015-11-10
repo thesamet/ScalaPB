@@ -3,7 +3,6 @@ package com.trueaccord.scalapb
 import java.io.{InputStream, OutputStream}
 
 import com.google.protobuf.Descriptors.{FieldDescriptor, EnumDescriptor}
-import com.google.protobuf.{CodedInputStream, CodedOutputStream}
 import scala.collection.JavaConversions._
 
 import scala.util.Try
@@ -75,7 +74,7 @@ trait GeneratedMessage extends Serializable {
 
   def toByteArray: Array[Byte] = {
     val a = new Array[Byte](serializedSize)
-    val outputStream = com.google.protobuf.CodedOutputStream.newInstance(a)
+    val outputStream = CodedOutputStream.newInstance(a)
     writeTo(outputStream)
     outputStream.checkNoSpaceLeft()
     a

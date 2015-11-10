@@ -1,0 +1,242 @@
+package com.trueaccord.scalapb
+
+import java.io.IOException
+import java.io.OutputStream
+import java.nio.ByteBuffer
+import CodedOutputStream._
+import com.google.protobuf.ByteString
+
+object WireFormat {
+  val WIRETYPE_VARINT           = 0
+  val WIRETYPE_FIXED64          = 1
+  val WIRETYPE_LENGTH_DELIMITED = 2
+  val WIRETYPE_START_GROUP      = 3
+  val WIRETYPE_END_GROUP        = 4
+  val WIRETYPE_FIXED32          = 5
+
+  val TAG_TYPE_BITS             = 3
+  val TAG_TYPE_MASK = (1 << TAG_TYPE_BITS) - 1
+
+  def getTagWireType(tag: Int) = tag & TAG_TYPE_MASK
+
+  def makeTag(fieldNumber: Int, wireType: Int) =
+    (fieldNumber << TAG_TYPE_BITS) | wireType
+
+  def getTagFieldNumber(tag: Int): Int = tag >>> TAG_TYPE_BITS
+}
+
+object Internal {
+  val UTF_8 = java.nio.charset.Charset.forName("UTF-8")
+  val EMPTY_BYTE_ARRAY: Array[Byte] = Array()
+}
+
+object CodedOutputStream {
+
+  val DEFAULT_BUFFER_SIZE = 4096
+
+  def computePreferredBufferSize(dataLength: Int): Int = {
+    if (dataLength > DEFAULT_BUFFER_SIZE) return DEFAULT_BUFFER_SIZE
+    dataLength
+  }
+
+  def newInstance(output: OutputStream): CodedOutputStream = {
+    newInstance(output, DEFAULT_BUFFER_SIZE)
+  }
+
+  def newInstance(output: OutputStream, bufferSize: Int): CodedOutputStream = {
+    new CodedOutputStream(output, Array.ofDim[Byte](bufferSize))
+  }
+
+  def newInstance(byteBuffer: ByteBuffer): CodedOutputStream = {
+    newInstance(byteBuffer, DEFAULT_BUFFER_SIZE)
+  }
+
+  def newInstance(b: Array[Byte]): CodedOutputStream = {
+    new CodedOutputStream(null, b)
+  }
+
+  def newInstance(byteBuffer: ByteBuffer, bufferSize: Int): CodedOutputStream = {
+    newInstance(new ByteBufferOutputStream(byteBuffer), bufferSize)
+  }
+
+  private class ByteBufferOutputStream(private val byteBuffer: ByteBuffer) extends OutputStream {
+
+    override def write(b: Int) {
+      byteBuffer.put(b.toByte)
+    }
+
+    override def write(data: Array[Byte], offset: Int, length: Int) {
+      byteBuffer.put(data, offset, length)
+    }
+  }
+
+  def computeDoubleSize(fieldNumber: Int, value: Double): Int = {
+    computeTagSize(fieldNumber) + computeDoubleSizeNoTag(value)
+  }
+
+  def computeFloatSize(fieldNumber: Int, value: Float): Int = {
+    computeTagSize(fieldNumber) + computeFloatSizeNoTag(value)
+  }
+
+  def computeUInt64Size(fieldNumber: Int, value: Long): Int = {
+    computeTagSize(fieldNumber) + computeUInt64SizeNoTag(value)
+  }
+
+  def computeInt64Size(fieldNumber: Int, value: Long): Int = {
+    computeTagSize(fieldNumber) + computeInt64SizeNoTag(value)
+  }
+
+  def computeInt32Size(fieldNumber: Int, value: Int): Int = {
+    computeTagSize(fieldNumber) + computeInt32SizeNoTag(value)
+  }
+
+  def computeFixed64Size(fieldNumber: Int, value: Long): Int = {
+    computeTagSize(fieldNumber) + computeFixed64SizeNoTag(value)
+  }
+
+  def computeFixed32Size(fieldNumber: Int, value: Int): Int = {
+    computeTagSize(fieldNumber) + computeFixed32SizeNoTag(value)
+  }
+
+  def computeBoolSize(fieldNumber: Int, value: Boolean): Int = {
+    computeTagSize(fieldNumber) + computeBoolSizeNoTag(value)
+  }
+
+  def computeStringSize(fieldNumber: Int, value: String): Int = {
+    computeTagSize(fieldNumber) + computeStringSizeNoTag(value)
+  }
+
+  def computeBytesSize(fieldNumber: Int, value: ByteString): Int = {
+    computeTagSize(fieldNumber) + computeBytesSizeNoTag(value)
+  }
+
+  def computeByteArraySize(fieldNumber: Int, value: Array[Byte]): Int = {
+    computeTagSize(fieldNumber) + computeByteArraySizeNoTag(value)
+  }
+
+  def computeByteBufferSize(fieldNumber: Int, value: ByteBuffer): Int = {
+    computeTagSize(fieldNumber) + computeByteBufferSizeNoTag(value)
+  }
+
+  def computeUInt32Size(fieldNumber: Int, value: Int): Int = {
+    computeTagSize(fieldNumber) + computeUInt32SizeNoTag(value)
+  }
+
+  def computeEnumSize(fieldNumber: Int, value: Int): Int = {
+    computeTagSize(fieldNumber) + computeEnumSizeNoTag(value)
+  }
+
+  def computeSFixed32Size(fieldNumber: Int, value: Int): Int = {
+    computeTagSize(fieldNumber) + computeSFixed32SizeNoTag(value)
+  }
+
+  def computeSFixed64Size(fieldNumber: Int, value: Long): Int = {
+    computeTagSize(fieldNumber) + computeSFixed64SizeNoTag(value)
+  }
+
+  def computeSInt32Size(fieldNumber: Int, value: Int): Int = {
+    computeTagSize(fieldNumber) + computeSInt32SizeNoTag(value)
+  }
+
+  def computeSInt64Size(fieldNumber: Int, value: Long): Int = {
+    computeTagSize(fieldNumber) + computeSInt64SizeNoTag(value)
+  }
+
+  def computeDoubleSizeNoTag(value: Double): Int = LITTLE_ENDIAN_64_SIZE
+
+  def computeFloatSizeNoTag(value: Float): Int = LITTLE_ENDIAN_32_SIZE
+
+  def computeUInt64SizeNoTag(value: Long): Int = computeRawVarint64Size(value)
+
+  def computeInt64SizeNoTag(value: Long): Int = computeRawVarint64Size(value)
+
+  def computeInt32SizeNoTag(value: Int): Int = {
+    if (value >= 0) {
+      computeRawVarint32Size(value)
+    } else {
+      10
+    }
+  }
+
+  def computeFixed64SizeNoTag(value: Long): Int = LITTLE_ENDIAN_64_SIZE
+
+  def computeFixed32SizeNoTag(value: Int): Int = LITTLE_ENDIAN_32_SIZE
+
+  def computeBoolSizeNoTag(value: Boolean): Int = 1
+
+  def computeStringSizeNoTag(value: String): Int = {
+    val bytes = value.getBytes(Internal.UTF_8)
+    computeRawVarint32Size(bytes.length) + bytes.length
+  }
+
+  def computeBytesSizeNoTag(value: ByteString): Int = {
+    computeRawVarint32Size(value.size) + value.size
+  }
+
+  def computeByteArraySizeNoTag(value: Array[Byte]): Int = {
+    computeRawVarint32Size(value.length) + value.length
+  }
+
+  def computeByteBufferSizeNoTag(value: ByteBuffer): Int = {
+    computeRawVarint32Size(value.capacity()) + value.capacity()
+  }
+
+  def computeUInt32SizeNoTag(value: Int): Int = computeRawVarint32Size(value)
+
+  def computeEnumSizeNoTag(value: Int): Int = computeInt32SizeNoTag(value)
+
+  def computeSFixed32SizeNoTag(value: Int): Int = LITTLE_ENDIAN_32_SIZE
+
+  def computeSFixed64SizeNoTag(value: Long): Int = LITTLE_ENDIAN_64_SIZE
+
+  def computeSInt32SizeNoTag(value: Int): Int = {
+    computeRawVarint32Size(encodeZigZag32(value))
+  }
+
+  def computeSInt64SizeNoTag(value: Long): Int = {
+    computeRawVarint64Size(encodeZigZag64(value))
+  }
+
+  @SerialVersionUID(-6947486886997889499L)
+  class OutOfSpaceException() extends IOException("CodedOutputStream was writing to a flat byte array and ran " +
+    "out of space.")
+
+  def computeTagSize(fieldNumber: Int): Int = {
+    computeRawVarint32Size(WireFormat.makeTag(fieldNumber, 0))
+  }
+
+  def computeRawVarint32Size(value: Int): Int = {
+    if ((value & (0xffffffff << 7)) == 0) return 1
+    if ((value & (0xffffffff << 14)) == 0) return 2
+    if ((value & (0xffffffff << 21)) == 0) return 3
+    if ((value & (0xffffffff << 28)) == 0) return 4
+    5
+  }
+
+  def computeRawVarint64Size(value: Long): Int = {
+    if ((value & (0xffffffffffffffffL << 7)) == 0) return 1
+    if ((value & (0xffffffffffffffffL << 14)) == 0) return 2
+    if ((value & (0xffffffffffffffffL << 21)) == 0) return 3
+    if ((value & (0xffffffffffffffffL << 28)) == 0) return 4
+    if ((value & (0xffffffffffffffffL << 35)) == 0) return 5
+    if ((value & (0xffffffffffffffffL << 42)) == 0) return 6
+    if ((value & (0xffffffffffffffffL << 49)) == 0) return 7
+    if ((value & (0xffffffffffffffffL << 56)) == 0) return 8
+    if ((value & (0xffffffffffffffffL << 63)) == 0) return 9
+    10
+  }
+
+  val LITTLE_ENDIAN_32_SIZE = 4
+
+  val LITTLE_ENDIAN_64_SIZE = 8
+
+  def encodeZigZag32(n: Int): Int = (n << 1) ^ (n >> 31)
+
+  def encodeZigZag64(n: Long): Long = (n << 1) ^ (n >> 63)
+}
+
+class CodedOutputStream (output: OutputStream, buffer: Array[Byte]) {
+
+
+
+}
